@@ -33,7 +33,7 @@ module attributes {gpu.container_module} {
 
     func.func @main() {
 
-        %size = arith.constant 8 : index
+        %size = arith.constant 4 : index
 
         %c0 = arith.constant 0 : index
         %c1 = arith.constant 1 : index
@@ -75,7 +75,7 @@ module attributes {gpu.container_module} {
         %printval = memref.cast %arg2 : memref<?xf32> to memref<*xf32>
 
         call @printMemrefF32(%printval) : (memref<*xf32>) -> ()
-        //CHECK: [3, 3, 3, 3]
+        //CHECK: [0, 2, 4, 8]
 
         memref.dealloc %arg0 : memref<?xf32>
         memref.dealloc %arg1 : memref<?xf32>

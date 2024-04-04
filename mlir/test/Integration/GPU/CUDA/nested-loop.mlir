@@ -7,6 +7,17 @@ module attributes {gpu.container_module} {
         return %arg0 : index
     }
 
+    func.func @init(%arr: memref<?xf32>, %size: index) -> memref<?xf32> {
+
+        %c0 = arith.constant 0 : index
+        %c1 = arith.constant 1 : index
+        scf.for %i = %c0 to %size step %c1 {
+            %t = arith.index_cast %i : index to i32
+            %r = arith.sitofp %t : i32 to f32
+            memref.store %r, %arr[%i] : memref<?xf32>
+        }
+        return %arr: memref<?xf32>
+    }
 
     gpu.module @kernels {
         gpu.func @add_arrays (%arg0: memref<?xf32>, %arg1: memref<?xf32>, %arg2: memref<?xf32>) kernel {
@@ -26,9 +37,9 @@ module attributes {gpu.container_module} {
     
     func.func @main() {
 
-        %lo_size = arith.constant 4 : index
         %p_size = arith.constant 4 : index
-
+        %lo_size = arith.constant 4 : index
+        
         %cidx_0 = arith.constant 0 : index
         %cidx_1 = arith.constant 1 : index
         %cidx_2 = arith.constant 2 : index
@@ -38,19 +49,15 @@ module attributes {gpu.container_module} {
         %ci32_1 = arith.constant 1 : i32
         %ci32_2 = arith.constant 2 : i32
 
-        //Whichever table is smaller, we will use that for comparison (as the outer loop)
+        //Whichever table is smaller, we use that for comparison (as the outer loop)
+        // i.e. the larger table is allocated to threads
         %lo_or_p_as_outer = arith.cmpi "ult", %lo_size, %p_size : index
-        %size = arith.constant 0 : index
-        scf.if %lo_or_p_as_outer {
-            %size = func.call @identity(%p_size) : (index) -> (index)
-            // part table is 0, line_order table is 1
-            %which_table = arith.constant 0 : index
-        } else {
-            %size = func.call @identity(%lo_size) : (index) -> (index)
-            // part table is 0, line_order table is 1
-            %which_table = arith.constant 1 : index
-        }
 
+        //%size = memref.alloc() : memref<index>
+        %size = arith.select %lo_or_p_as_outer, %p_size, %lo_size : index
+
+        // part table is 0, line_order table is 1
+        %which_table = arith.select %lo_or_p_as_outer, %cidx_0, %cidx_1 : index
     
         %num_blocks = arith.constant 1 : index
         %num_threads = func.call @identity(%size) : (index) -> (index)
