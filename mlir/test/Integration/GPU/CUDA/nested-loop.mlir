@@ -3,10 +3,6 @@
 
 module attributes {gpu.container_module} {
 
-    func.func @identity(%arg0: index) -> index {
-        return %arg0 : index
-    }
-
     func.func @init(%size: index) -> memref<?x2xi32> {
 
         %arr = memref.alloc(%size) : memref<?x2xi32>
@@ -184,7 +180,6 @@ module attributes {gpu.container_module} {
         %cidx_1 = arith.constant 1 : index
         %cidx_1024 = arith.constant 1024 : index
 
-        
         %ci32_0 = arith.constant 0 : i32
         %ci32_1 = arith.constant 1 : i32
         %ci32_2 = arith.constant 2 : i32
@@ -202,10 +197,6 @@ module attributes {gpu.container_module} {
         %result_size = arith.muli %p_size, %lo_size : index
         %d_result = gpu.alloc(%result_size) : memref<?x3xi32>
 
-        // print the result
-        %print = memref.cast %d_line_order : memref<?x2xi32> to memref<*xi32>
-        func.call @printMemrefI32(%print) : (memref<*xi32>) -> ()
-
 
         //Whichever table is smaller, we use that for comparison (as the outer loop)
         // i.e. the larger table is allocated to threads
@@ -219,12 +210,17 @@ module attributes {gpu.container_module} {
 
         //Keep threads per block constant at 1024
         %num_threads_per_block = arith.constant 1024 : index
-        %num_blocks = arith.divui %total_threads, %num_threads_per_block : index
-        
+
+        //Calculate the number of blocks needed
+        //perform ceil division
+        %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
+        %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
+        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
+
         %items_per_thread = arith.constant 1 : index
 
 
-        // launch the kernel
+        //launch the kernel
         %gblock_offset = gpu.alloc() : memref<1xi32>
         gpu.launch_func @kernels::@nested_join
             blocks in (%num_blocks, %cidx_1, %cidx_1) 
@@ -246,4 +242,3 @@ module attributes {gpu.container_module} {
     
     func.func private @printMemrefI32(memref<*xi32>)
 }
-
