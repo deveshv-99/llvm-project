@@ -22,10 +22,11 @@ module attributes {gpu.container_module} {
     }
 
     gpu.module @kernels {
-        //func.func @line_order_outer(%)
 
-        gpu.func @nested_join (%d_table_1 : memref<?x?xi32>, %d_table_2 : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_1_rows : index, 
-            %table_1_cols : index, %table_2_cols : index, %table_2_rows : index, %which_table : index, %gblock_offset : memref<1xi32>) 
+        // Kernel to perform nested join
+        // Table x is the outer loop, which will be assigned to threads. and Table y is the inner loop used for comparison
+        gpu.func @nested_join (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
+            %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
             workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>)
             private(%temp_idx: memref<1xindex>)
             kernel 
@@ -215,23 +216,8 @@ module attributes {gpu.container_module} {
 
         %d_result = gpu.alloc(%result_rows, %result_cols) : memref<?x?xi32>
 
-        //Whichever table is smaller, we use that for comparison (as the outer loop)
-        // i.e. the larger table is allocated to threads
-        %lo_or_p_as_outer = arith.cmpi "ult", %table_2_rows, %table_1_rows : index
-
-        //%total_threads contains the total number of threads to be created
-        %total_threads = arith.select %lo_or_p_as_outer, %table_1_rows, %table_2_rows : index
-
-        // part table is 0, line_order table is 1
-        %which_table = arith.select %lo_or_p_as_outer, %cidx_0, %cidx_1 : index
-
         // //-------------> Keep threads per block constant at 1024.. Need to change this?
         %num_threads_per_block = arith.constant 1024 : index
-
-        //Calculate the number of blocks needed, perform ceil division: num_blocks = (total_threads + num_threads_per_block - 1) / num_threads_per_block
-        %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
-        %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
-        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
 
         // //-------------> Keep items per thread constant at 1.. Not sure about this either
         %items_per_thread = arith.constant 1 : index
@@ -239,11 +225,40 @@ module attributes {gpu.container_module} {
         //global variable for all blocks
         %gblock_offset = gpu.alloc() : memref<1xi32>
 
-        gpu.launch_func @kernels::@nested_join
+        //Whichever table is smaller, we use that for comparison (as the inner loop)
+        // i.e. the larger table is allocated to threads (outer loop)
+        %table_1_or_2_as_inner = arith.cmpi "ult", %table_1_rows, %table_2_rows : index
+
+        //Number of threads would be the number of rows in the larger table
+        %total_threads = arith.select %table_1_or_2_as_inner, %table_2_rows, %table_1_rows : index
+
+        // To calculate the number of blocks needed, perform ceil division: num_blocks = (total_threads + num_threads_per_block - 1) / num_threads_per_block
+        // TODO: arith.ceildivui gives errors which i cant bother for now. so using the above thing instead..
+        %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
+        %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
+        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
+
+
+        scf.if %table_1_or_2_as_inner {
+            // Table 2 is the outer loop, which will be assigned to threads
+            // %total_threads = %table_2_rows
+
+            gpu.launch_func @kernels::@nested_join
+            blocks in (%num_blocks, %cidx_1, %cidx_1) 
+            threads in (%num_threads_per_block, %cidx_1, %cidx_1)
+            args(%d_table_2 : memref<?x?xi32>, %d_table_1 : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_2_rows : index, 
+                %table_2_cols : index, %table_1_cols : index, %table_1_rows : index, %gblock_offset : memref<1xi32>)
+
+        } else {
+            // Table 1 is the outer loop, which will be assigned to threads
+            // %total_threads = %table_1_rows
+
+            gpu.launch_func @kernels::@nested_join
             blocks in (%num_blocks, %cidx_1, %cidx_1) 
             threads in (%num_threads_per_block, %cidx_1, %cidx_1)
             args(%d_table_1 : memref<?x?xi32>, %d_table_2 : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_1_rows : index, 
-                %table_1_cols : index, %table_2_cols : index, %table_2_rows : index, %which_table : index, %gblock_offset : memref<1xi32>)
+                %table_1_cols : index, %table_2_rows : index, %table_2_cols : index, %gblock_offset : memref<1xi32>)
+        }
 
         // copy the result column from the device to host
         %h_result = memref.alloc(%result_rows, %result_cols) : memref<?x?xi32>
