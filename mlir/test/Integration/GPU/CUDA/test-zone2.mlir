@@ -24,10 +24,11 @@ module attributes {gpu.container_module} {
     gpu.module @kernels {
 
         // Kernel to perform nested join
-        // Table x is the outer loop, which will be assigned to threads. and Table y is the inner loop used for comparison
         gpu.func @nested_join (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
             %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
-            workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>)
+
+            //---------------> Size of shared memory is fixed for now. To be changed later 
+            workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
             private(%temp_idx: memref<1xindex>)
             kernel 
         {
@@ -36,17 +37,16 @@ module attributes {gpu.container_module} {
             %bidx = gpu.block_id x
             %tidx = gpu.thread_id x
 
-            
-
             // Calculate if thread is valid: global_thread_index = bdim * bidx + tidx
-            %num_threads = arith.muli %bdim, %bidx : index
-            %g_thread_idx = arith.addi %num_threads, %tidx : index
+            %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
+            %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
 
             //-------------------- Assuming Line Order is the outer loop ---------------------
-            %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %lo_size : index
+            %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %table_x_rows : index
 
             scf.if %is_thread_valid {
                 gpu.printf "Thread ID: %lld \n" %tidx : index
+                
                 // print debugging constants
                 %print_thread_id = arith.constant 0: index
                 %print_block_id = arith.constant 0: index
@@ -56,7 +56,7 @@ module attributes {gpu.container_module} {
                 %should_print = arith.andi %should_print_thread, %should_print_block : i1
 
                 scf.if %should_print {
-                    gpu.printf "Block ID: %ld, Thread ID: %ld, g_thread_idx: %ld\n" %bidx, %tidx, %g_thread_idx : index, index, index
+                    gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
                 }
 
                 //constants
@@ -67,13 +67,14 @@ module attributes {gpu.container_module} {
                 // Step 1: Compute the prefix sum for each thread, which is used for calculating the start index in the result array 
                 // For each thread, compare its key with all keys in the smaller table
 
-                %key1 = memref.load %d_table_2[%g_thread_idx, %cidx_0] : memref<?x?xi32>
+                %key1 = memref.load %table_x[%g_thread_idx, %cidx_0] : memref<?x?xi32>
                 
                 //%thread_sums stores the prefix sum for each thread in the block
                 memref.store %cidx_0, %thread_sums[%tidx] : memref<1024xindex, 3>
+
                 // for each key in the smaller table
-                scf.for %j = %cidx_0 to %p_size step %cidx_1 {
-                    %key2 = memref.load %d_part[%j, %cidx_0] : memref<?x?xi32>
+                scf.for %j = %cidx_0 to %table_y_rows step %cidx_1 {
+                    %key2 = memref.load %table_y[%j, %cidx_0] : memref<?x?xi32>
                     // compare the keys
                     %cmp = arith.cmpi "eq", %key1, %key2 : i32
                     // if keys match, increment the prefix sum
@@ -95,23 +96,24 @@ module attributes {gpu.container_module} {
                         gpu.printf "Thread start indices: [0, "
                     }
                     
-                    //thread_sums[i] stores the starting index to write from for thread i, which is 0 for thread 0
+                    
                     // %temp_idx stores the current value of prefix sum
                     memref.store %cidx_0, %temp_idx[%cidx_0] : memref<1xindex> 
 
                     //For all threads in thread block
                     scf.for %i = %cidx_0 to %bdim step %cidx_1 {
-                        %g_thread_index = arith.addi %num_threads, %i : index
+                        %g_thread_index = arith.addi %g_thread_offset_in_blocks, %i : index
 
-                        %is_valid = arith.cmpi "ult", %g_thread_index, %lo_size : index
+                        %is_valid = arith.cmpi "ult", %g_thread_index, %table_x_rows : index
                         scf.if %is_valid{
+
                             %cur_count = memref.load %thread_sums[%i] : memref<1024xindex, 3>
                             %cur_idx = memref.load %temp_idx[%cidx_0] : memref<1xindex>
                             %next_index = arith.addi %cur_idx, %cur_count : index
 
+                            //thread_sums[i] stores the starting index to write from for thread i, which is 0 for thread 0
                             memref.store %cur_idx, %thread_sums[%i] : memref<1024xindex, 3>
                             memref.store %next_index, %temp_idx[%cidx_0] : memref<1xindex>
-                            
 
                             scf.if %should_print {
                                 gpu.printf "%ld, " %next_index : index
@@ -142,7 +144,7 @@ module attributes {gpu.container_module} {
                 // Step 3: Each thread needs to store its value in the result array
                 // The start index are loaded from the thread_sums array
                 // The current index is stored in the temp_idx array for each thread
-                // It is incremented after each store that passes the predicate
+                // It is incremented after each store that matches the keys
 
                 %cur_block_offset = memref.load %b_block_offset[%cidx_0] : memref<1xindex, 3>
                 %cur_thread_offset = memref.load %thread_sums[%tidx] : memref<1024xindex, 3>
@@ -154,23 +156,33 @@ module attributes {gpu.container_module} {
                 }
 
                 // for each key in the smaller table
-                scf.for %j = %cidx_0 to %p_size step %cidx_1 {
-                    %key2 = memref.load %d_part[%j, %cidx_0] : memref<?x?xi32>
-
+                scf.for %i = %cidx_0 to %table_y_rows step %cidx_1 {
+                    %key2 = memref.load %table_y[%i, %cidx_0] : memref<?x?xi32>
                     // compare the keys
                     %cmp = arith.cmpi "eq", %key1, %key2 : i32
-                    // if keys match, increment the prefix sum
+                    // if keys match, store the values in the result array
                     scf.if %cmp {
-
+                        // load the current index to write to in the result array
                         %cur_idx = memref.load %temp_idx[%cidx_0] : memref<1xindex>
 
-                        %val1 = memref.load %d_table_2[%g_thread_idx, %cidx_1] : memref<?x?xi32>
-                        %val2 = memref.load %d_part[%j, %cidx_1] : memref<?x?xi32>
+                        // store the values from table x in d_result[0 to table_x_cols] array
+                        scf.for %j = %cidx_0 to %table_x_cols step %cidx_1 {
+                            %val1 = memref.load %table_x[%g_thread_idx, %j] : memref<?x?xi32>
+                            memref.store %val1, %d_result[%cur_idx, %j] : memref<?x?xi32>
+                        }
+                        // just to find the index in column for result array
+                        %table_x_cols_ = arith.subi %table_x_cols, %cidx_1 : index
 
-                        memref.store %key1, %d_result[%cur_idx, %cidx_0] : memref<?x?xi32>
-                        memref.store %val1, %d_result[%cur_idx, %cidx_1] : memref<?x?xi32>
-                        memref.store %val2, %d_result[%cur_idx, %cidx_2] : memref<?x?xi32>
-
+                        // store the values from table y in d_result[table_x_cols to table_x_cols+table_y_cols] array
+                        // start j from 1, to avoid storing the key again
+                        scf.for %j = %cidx_1 to %table_y_cols step %cidx_1 {
+                            %res_y_col = arith.addi %table_x_cols_, %j : index
+                            %val2 = memref.load %table_y[%i, %j] : memref<?x?xi32>
+                            memref.store %val2, %d_result[%cur_idx, %res_y_col] : memref<?x?xi32>
+                        }
+                        // update the next index for the result array
+                        %next_idx = arith.addi %cur_idx, %cidx_1 : index
+                        memref.store %next_idx, %temp_idx[%cidx_0] : memref<1xindex>
                     }
                 }
             }
@@ -192,11 +204,11 @@ module attributes {gpu.container_module} {
 
         // Table sizes have to be passed as arguments later on, with the number of columns for each table.
         // For our specific example, part_table is table_1 and line_order is table_2 
-        %table_1_rows = arith.constant 4 : index
-        %table_2_rows = arith.constant 4 : index
+        %table_1_rows = arith.constant 20 : index
+        %table_2_rows = arith.constant 20 : index
         
         %table_1_cols = arith.constant 2 : index
-        %table_2_cols = arith.constant 2 : index
+        %table_2_cols = arith.constant 3 : index
 
         //Initialize the tables to fixed values for now.. 
         %h_table_1 = call @init(%table_1_rows, %table_1_cols) : (index,index) -> memref<?x?xi32>
@@ -208,10 +220,10 @@ module attributes {gpu.container_module} {
         %d_table_2 = gpu.alloc(%table_2_rows, %table_2_cols) : memref<?x?xi32>
         gpu.memcpy %d_table_2, %h_table_2 : memref<?x?xi32>, memref<?x?xi32>
 
-        // //--------------------> Allocate result array to contain number of rows as size of table1*table2... Need something better than this?
+        // //-------------> Allocate result array to contain number of rows as size of table1*table2... Need something better than this?
         %result_rows = arith.muli %table_1_rows, %table_2_rows : index
         // Result columns will be (sum of columns of both tables - 1 (for the duplicate key))
-        %result_cols_ = arith.muli %table_1_cols, %table_2_cols : index 
+        %result_cols_ = arith.addi %table_1_cols, %table_2_cols : index 
         %result_cols = arith.subi %result_cols_, %cidx_1 : index 
 
         %d_result = gpu.alloc(%result_rows, %result_cols) : memref<?x?xi32>
@@ -233,32 +245,27 @@ module attributes {gpu.container_module} {
         %total_threads = arith.select %table_1_or_2_as_inner, %table_2_rows, %table_1_rows : index
 
         // To calculate the number of blocks needed, perform ceil division: num_blocks = (total_threads + num_threads_per_block - 1) / num_threads_per_block
-        // TODO: arith.ceildivui gives errors which i cant bother for now. so using the above thing instead..
+        // TODO: arith.ceildivui gives errors which i cant figure out. so using the above thing instead..
         %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
         %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
         %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
 
 
-        scf.if %table_1_or_2_as_inner {
-            // Table 2 is the outer loop, which will be assigned to threads
-            // %total_threads = %table_2_rows
+        //defining parameters to be passed to the kernel
+        // Table x is the outer loop, which will be assigned to threads. and Table y is the inner loop used for comparison
+        %table_x = arith.select %table_1_or_2_as_inner, %d_table_2, %d_table_1 : memref<?x?xi32>
+        %table_y = arith.select %table_1_or_2_as_inner, %d_table_1, %d_table_2 : memref<?x?xi32>
+        
+        %table_x_rows = arith.select %table_1_or_2_as_inner, %table_2_rows, %table_1_rows : index
+        %table_x_cols = arith.select %table_1_or_2_as_inner, %table_2_cols, %table_1_cols : index
+        %table_y_rows = arith.select %table_1_or_2_as_inner, %table_1_rows, %table_2_rows : index
+        %table_y_cols = arith.select %table_1_or_2_as_inner, %table_1_cols, %table_2_cols : index
 
-            gpu.launch_func @kernels::@nested_join
-            blocks in (%num_blocks, %cidx_1, %cidx_1) 
-            threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-            args(%d_table_2 : memref<?x?xi32>, %d_table_1 : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_2_rows : index, 
-                %table_2_cols : index, %table_1_cols : index, %table_1_rows : index, %gblock_offset : memref<1xi32>)
-
-        } else {
-            // Table 1 is the outer loop, which will be assigned to threads
-            // %total_threads = %table_1_rows
-
-            gpu.launch_func @kernels::@nested_join
-            blocks in (%num_blocks, %cidx_1, %cidx_1) 
-            threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-            args(%d_table_1 : memref<?x?xi32>, %d_table_2 : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_1_rows : index, 
-                %table_1_cols : index, %table_2_rows : index, %table_2_cols : index, %gblock_offset : memref<1xi32>)
-        }
+        gpu.launch_func @kernels::@nested_join
+        blocks in (%num_blocks, %cidx_1, %cidx_1) 
+        threads in (%num_threads_per_block, %cidx_1, %cidx_1)
+        args(%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
+            %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>)
 
         // copy the result column from the device to host
         %h_result = memref.alloc(%result_rows, %result_cols) : memref<?x?xi32>

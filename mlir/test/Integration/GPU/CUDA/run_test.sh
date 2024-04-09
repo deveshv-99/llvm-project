@@ -15,6 +15,5 @@ $MLIR_OPT  -convert-scf-to-cf $INPUT_FILE \
     | $MLIR_OPT -gpu-kernel-outlining \
     | $MLIR_OPT -pass-pipeline='builtin.module(gpu.module(strip-debuginfo,convert-gpu-to-nvvm,gpu-to-cubin))'\
     | $MLIR_OPT -gpu-async-region -gpu-to-llvm \
-    | $MLIR_CPU_RUNNER --shared-libs=$SO_DEP1 --shared-libs=$SO_DEP2 --shared-libs=$SO_DEP3 --entry-point-result=void -O0
-
-# -o ./test.mlir
+    | $MLIR_CPU_RUNNER --shared-libs=$SO_DEP1 --shared-libs=$SO_DEP2 --shared-libs=$SO_DEP3 --entry-point-result=void -O0 
+# | -o ./test.mlir
