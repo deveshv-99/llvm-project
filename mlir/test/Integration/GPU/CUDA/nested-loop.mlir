@@ -14,8 +14,10 @@ module attributes {gpu.container_module} {
         scf.for %i = %cidx_0 to %rows step %cidx_1 {
             scf.for %j = %cidx_0 to %cols step %cidx_1 {
 
-                %t = arith.index_cast %i : index to i32
-                memref.store %t, %arr[%i,%j] : memref<?x?xi32>
+                %i_i32 = arith.index_cast %i : index to i32
+                %j_i32 = arith.index_cast %j : index to i32
+                %val = arith.addi %i_i32, %j_i32 : i32
+                memref.store %val, %arr[%i,%j] : memref<?x?xi32>
             }
         }
         return %arr: memref<?x?xi32>
@@ -207,8 +209,8 @@ module attributes {gpu.container_module} {
         %table_1_rows = arith.constant 20 : index
         %table_2_rows = arith.constant 20 : index
         
-        %table_1_cols = arith.constant 2 : index
-        %table_2_cols = arith.constant 3 : index
+        %table_1_cols = arith.constant 3 : index
+        %table_2_cols = arith.constant 2 : index
 
         //Initialize the tables to fixed values for now.. 
         %h_table_1 = call @init(%table_1_rows, %table_1_cols) : (index,index) -> memref<?x?xi32>
@@ -275,6 +277,15 @@ module attributes {gpu.container_module} {
         %dst = memref.cast %h_result : memref<?x?xi32> to memref<*xi32>
         call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
 
+        // deallocate the arrays
+        memref.dealloc %h_table_1 : memref<?x?xi32>
+        memref.dealloc %h_table_2 : memref<?x?xi32>
+        memref.dealloc %h_result : memref<?x?xi32>
+        gpu.dealloc %d_table_1 : memref<?x?xi32>
+        gpu.dealloc %d_table_2 : memref<?x?xi32>
+        gpu.dealloc %d_result : memref<?x?xi32>
+        gpu.dealloc %gblock_offset : memref<1xi32>
+        
         return
     }
     
