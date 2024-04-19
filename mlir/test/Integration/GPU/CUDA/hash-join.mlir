@@ -3,16 +3,16 @@
 
 module attributes {gpu.container_module} {
 
-    // To initialize the tables with fixed values.. in column major order
-    func.func @init(%cols: index, %rows: index) -> memref<?x?xi32> {
+    // To initialize the tables with fixed values
+    func.func @init(%rows: index, %cols: index) -> memref<?x?xi32> {
 
-        %arr = memref.alloc(%cols, %rows) : memref<?x?xi32>
+        %arr = memref.alloc(%rows, %cols) : memref<?x?xi32>
         %cidx_0 = arith.constant 0 : index
         %cidx_1 = arith.constant 1 : index
         %ci32_1 = arith.constant 1 : i32
 
-        scf.for %i = %cidx_0 to %cols step %cidx_1 {
-            scf.for %j = %cidx_0 to %rows step %cidx_1 {
+        scf.for %i = %cidx_0 to %rows step %cidx_1 {
+            scf.for %j = %cidx_0 to %cols step %cidx_1 {
 
                 %i_i32 = arith.index_cast %i : index to i32
                 %j_i32 = arith.index_cast %j : index to i32
@@ -111,12 +111,8 @@ module attributes {gpu.container_module} {
         %table_2_cols = arith.constant 2 : index
 
         //Initialize the tables to fixed values for now.. 
-        %h_table_1 = call @init(%table_1_cols, %table_1_rows) : (index,index) -> memref<?x?xi32>
-        %h_table_2 = call @init(%table_2_cols, %table_2_rows) : (index,index) -> memref<?x?xi32>
-
-        //Separate the keys and the values
-        %h_table_1_keys = memref.subview %h_table_1[%cidx_0, %cidx_0], [%table_1_rows, %ci32_1] : memref<?x?xi32>
-        %h_table_1_vals = memref.subview %h_table_1[%cidx_0, %ci32_1], [%table_1_rows, %ci32_1] : memref<?x?xi32>
+        %h_table_1 = call @init(%table_1_rows, %table_1_cols) : (index,index) -> memref<?x?xi32>
+        %h_table_2 = call @init(%table_2_rows, %table_2_cols) : (index,index) -> memref<?x?xi32>
 
         // Allocate device memory for the tables
         %d_table_1 = gpu.alloc(%table_1_rows, %table_1_cols) : memref<?x?xi32>

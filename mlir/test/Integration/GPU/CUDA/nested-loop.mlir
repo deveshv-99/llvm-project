@@ -39,11 +39,11 @@ module attributes {gpu.container_module} {
             %bidx = gpu.block_id x
             %tidx = gpu.thread_id x
 
-            // Calculate if thread is valid: global_thread_index = bdim * bidx + tidx
+            // Global_thread_index = bdim * bidx + tidx
             %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
             %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
 
-            //-------------------- Assuming Line Order is the outer loop ---------------------
+            // Check if the thread is valid
             %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %table_x_rows : index
 
             scf.if %is_thread_valid {
