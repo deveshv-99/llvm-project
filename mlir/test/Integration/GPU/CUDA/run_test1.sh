@@ -15,6 +15,10 @@ $MLIR_OPT  -convert-scf-to-cf  $INPUT_FILE \
     | $MLIR_OPT -gpu-kernel-outlining \
     | $MLIR_OPT -pass-pipeline='builtin.module(gpu.module(strip-debuginfo,convert-gpu-to-nvvm,gpu-to-cubin))'\
     | $MLIR_OPT -gpu-async-region \
+    | $MLIR_OPT -arith-expand \
+    | $MLIR_OPT -convert-arith-to-llvm \
+    | $MLIR_OPT -convert-cf-to-llvm \
+    | $MLIR_OPT -convert-vector-to-llvm \
     | $MLIR_OPT -finalize-memref-to-llvm \
     | $MLIR_OPT -convert-func-to-llvm \
     | $MLIR_OPT -gpu-to-llvm \

@@ -23,10 +23,9 @@ func.func @scan_func(%arg0: !llvm.ptr<i8>) {
     %first_64 = arith.extf %first_val : f32 to f64
     %second_val = memref.load %second_memref[%c0_idx] : memref<1xi32>
     %second_64 = arith.extsi %second_val : i32 to i64
-
-    func.call @PrintF64(%first_64) : (f64) -> ()
-    func.call @PrintI64(%second_64) : (i64) -> ()
-
+            
+    %dst = memref.cast %first_memref: memref<1xf32> to memref<*xf32>
+    func.call @printMemrefF32(%dst) : (memref<*xf32>) -> ()
     return
 }
 
@@ -66,7 +65,7 @@ func.func @main() {
     return
 }
 
+func.func private @printMemrefI32(memref<*xi32>)
+func.func private @printMemrefF32(memref<*xf32>)
 
-func.func private @PrintI64(%0 : i64) -> ()
-func.func private @PrintF64(%0 : f64) -> ()
 }
