@@ -15,16 +15,25 @@ module attributes {gpu.container_module} {
         return
     }
 
+    
+
     func.func @Init_hash_table (%num_tuples : index, %ht_size : index) -> !llvm.ptr<i8> {
 
         %cneg1 = llvm.mlir.constant (-1 : i32) : i32   
         %c0 = llvm.mlir.constant (0 : i32) : i32
         %c1 = llvm.mlir.constant (1 : i32) : i32
-         
+        %c2 = llvm.mlir.constant (2 : i32) : i32
+
+        %ci32_1 = arith.constant 1 : i32
+
+        //convert  to i32
+        %num_tuples_i32 = arith.index_cast %num_tuples : index to i32
+        //convert ht_size to i32
+        %ht_size_i32 = arith.index_cast %ht_size : index to i32
 
         //num_tuples + 1
-        %num_tuples_1 = arith.addi %num_tuples, %cidx_1 : index
-        %linked_list = llvm.alloca %num_tuples_1 x !llvm.struct<(i32, i32, ptr)> :(index) -> !llvm.ptr<struct<(i32, i32, ptr)>>
+        %num_tuples_1 = arith.addi %num_tuples_i32, %ci32_1 : i32
+        %linked_list = llvm.alloca %num_tuples_1 x !llvm.struct<(i32, i32, ptr)> :(i32) -> !llvm.ptr<struct<(i32, i32, ptr)>>
         
         %first_node = llvm.getelementptr %linked_list[%c0] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<struct<(i32, i32, ptr)>>)
 
@@ -33,8 +42,7 @@ module attributes {gpu.container_module} {
         llvm.store %cneg1, %first_key : !llvm.ptr<i32>
 
         // Value is num_tuples 
-        //convert num_tuples to i32
-        %num_tuples_i32 = arith.index_cast %num_tuples : index to i32
+        
         %first_val = llvm.getelementptr %first_node[%c1] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<i32>)
         llvm.store %num_tuples_i32, %first_val : !llvm.ptr<i32>
 
@@ -44,11 +52,11 @@ module attributes {gpu.container_module} {
         llvm.store %null_ptr, %first_ptr : !llvm.ptr<ptr>
 
         // Allocate the hash table
-        %hash_table = llvm.alloca %ht_size x !llvm.struct<(i32,ptr)> : (index) -> !llvm.ptr<struct<(i32,ptr)>>
+        %hash_table = llvm.alloca %ht_size_i32 x !llvm.struct<(i32,ptr)> : (i32) -> !llvm.ptr<struct<(i32,ptr)>>
         //  ----------> TODO: store null in all the hash table entries 
 
         // Combine the linked list and the hash table into a single pointer
-        %ht = llvm.alloca %cidx_1 x !llvm.struct<(ptr,ptr)> : (index) -> !llvm.ptr<struct<(ptr,ptr)>>
+        %ht = llvm.alloca %ci32_1 x !llvm.struct<(ptr,ptr)> : (i32) -> !llvm.ptr<struct<(ptr,ptr)>>
         %ht1 = llvm.getelementptr %ht[%c0] : (!llvm.ptr<struct<(ptr, ptr)>>, i32) -> !llvm.ptr<struct<(ptr, ptr)>>
         
 
@@ -87,17 +95,24 @@ module attributes {gpu.container_module} {
         return %arr: memref<?x?xi32>
     }
 
-    func.func @hash(%key : i32){
-        // return modulo 100
-        %cidx_100 = arith.constant 100 : i32
-        %hash_val = arith.remui %key, %cidx_100 : i32
-        return %hash_val : i32
-    }
 
-    func.func @Insert_Node_HT(%ht : !llvm.ptr<i8>, %hash_val : i32, %key : i32, %val : i32, %free_index : memref<1xi32>) {
+
+
+
+    gpu.module @kernels {
+    
+        func.func @hash(%key : i32) -> i32{
+            // return modulo 100
+            %cidx_100 = arith.constant 100 : i32
+            %hash_val = arith.remui %key, %cidx_100 : i32
+            return %hash_val : i32
+        }
+
+        func.func @Insert_Node_HT(%ht : !llvm.ptr<i8>, %hash_val : i32, %key : i32, %val : i32, %free_index : memref<1xi32>) {
         %cidx_0 = arith.constant 0 : index  
         %c0 = llvm.mlir.constant (0 : i32) : i32
         %c1 = llvm.mlir.constant (1 : i32) : i32
+        %c2 = llvm.mlir.constant (2 : i32) : i32
         %ci32_1 = arith.constant 1 : i32
 
         %const_1 = llvm.mlir.constant (1 : i1) : i1
@@ -178,8 +193,6 @@ module attributes {gpu.container_module} {
         return
     }
 
-    gpu.module @kernels {
-
         gpu.func @build(%table_x_keys: memref<?xi32>, %table_x_vals: memref<?xi32>, %table_x_rows: index, %table_x_cols: index, %ht : !llvm.ptr<i8>, %free_index : memref<1xi32>)
             
             kernel
@@ -227,16 +240,16 @@ module attributes {gpu.container_module} {
         }
 
         // Kernel to perform hash join
-        gpu.func @probe (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
-            %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
-            //---------------> Size of shared memory is fixed for now. To be changed later 
-            workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
-            private(%temp_idx: memref<1xindex>)
-            kernel 
-        {
+        // gpu.func @probe (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
+        //     %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
+        //     //---------------> Size of shared memory is fixed for now. To be changed later 
+        //     workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
+        //     private(%temp_idx: memref<1xindex>)
+        //     kernel 
+        // {
             
             
-        }
+        // }
     }
     
     func.func @main() {
