@@ -98,7 +98,6 @@ module attributes {gpu.container_module} {
                         gpu.printf "Thread start indices: [0, "
                     }
                     
-                    
                     // %temp_idx stores the current value of prefix sum
                     memref.store %cidx_0, %temp_idx[%cidx_0] : memref<1xindex> 
 

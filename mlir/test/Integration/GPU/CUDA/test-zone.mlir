@@ -15,16 +15,54 @@ module attributes {gpu.container_module} {
         return
     }
 
-    // To initialize the tables with fixed values.. in column major order
-    func.func @init(%cols: index, %rows: index) -> memref<?x?xi32> {
+    func.func @Init_hash_table (%num_tuples : index, %ht_size : index) -> !llvm.ptr<i8> {
 
-        %arr = memref.alloc(%cols, %rows) : memref<?x?xi32>
+        %cneg1 = llvm.mlir.constant (-1 : i32) : i32   
+        %c0 = llvm.mlir.constant (0 : i32) : i32
+        %c1 = llvm.mlir.constant (1 : i32) : i32
+         
+
+        //num_tuples + 1
+        %num_tuples_1 = arith.addi %num_tuples, %cidx_1 : index
+        %linked_list = llvm.alloca %num_tuples_1 x !llvm.struct<(i32, i32, ptr)> :(index) -> !llvm.ptr<struct<(i32, i32, ptr)>>
+        
+        %first_node = llvm.getelementptr %linked_list[%c0] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<struct<(i32, i32, ptr)>>)
+
+        // Key of first node is -1
+        %first_key = llvm.getelementptr %first_node[%c0] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<i32>)
+        llvm.store %cneg1, %first_key : !llvm.ptr<i32>
+
+        // Value is num_tuples 
+        //convert num_tuples to i32
+        %num_tuples_i32 = arith.index_cast %num_tuples : index to i32
+        %first_val = llvm.getelementptr %first_node[%c1] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<i32>)
+        llvm.store %num_tuples_i32, %first_val : !llvm.ptr<i32>
+
+        // Next is NULL
+        %null_ptr = llvm.mlir.undef : !llvm.ptr
+        %first_ptr = llvm.getelementptr %first_node[%c2] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) ->  (!llvm.ptr<ptr>)
+        llvm.store %null_ptr, %first_ptr : !llvm.ptr<ptr>
+
+        // Allocate the hash table
+        %hash_table = llvm.alloca %ht_size x !llvm.struct<(i32,ptr)> : (index) -> !llvm.ptr<struct<(i32,ptr)>>
+
+        // Combine the linked list and the hash table into a single pointer
+        %ht = llvm.alloca %cidx_1 x !llvm.struct<(ptr,ptr)> : (index) -> !llvm.ptr<struct<(ptr,ptr)>>
+        %ht_ptr = llvm.bitcast %ht: !llvm.ptr<struct<(ptr, ptr)>> to !llvm.ptr<i8> 
+        
+        return %ht_ptr : !llvm.ptr<i8>
+    }
+
+    // To initialize the tables with fixed values
+    func.func @init(%rows: index, %cols: index) -> memref<?x?xi32> {
+
+        %arr = memref.alloc(%rows, %cols) : memref<?x?xi32>
         %cidx_0 = arith.constant 0 : index
         %cidx_1 = arith.constant 1 : index
         %ci32_1 = arith.constant 1 : i32
 
-        scf.for %i = %cidx_0 to %cols step %cidx_1 {
-            scf.for %j = %cidx_0 to %rows step %cidx_1 {
+        scf.for %i = %cidx_0 to %rows step %cidx_1 {
+            scf.for %j = %cidx_0 to %cols step %cidx_1 {
 
                 %i_i32 = arith.index_cast %i : index to i32
                 %j_i32 = arith.index_cast %j : index to i32
@@ -35,21 +73,6 @@ module attributes {gpu.container_module} {
         return %arr: memref<?x?xi32>
     }
 
-    func.func @Init_hash_table (%num_tuples : index, %ht_size : index) -> !llvm.ptr<i8> {
-        %cidx_0 = arith.constant 0 : index
-        %cidx_1 = arith.constant 1 : index
-
-        %linked_list = llvm.alloca %num_tuples x !llvm.struct<(i32, i32, ptr)> :(index) -> !llvm.ptr<struct<(i32, i32, ptr)>>
-
-        %hash_table = llvm.alloca %ht_size x !llvm.struct<(i32,ptr)> : (index) -> !llvm.ptr<struct<(i32,ptr)>>
-
-        %ht = llvm.alloca %cidx_1 x !llvm.struct<(ptr,ptr)> : (index) -> !llvm.ptr<struct<(ptr,ptr)>>
-
-        %ht_ptr = llvm.bitcast %ht: !llvm.ptr<struct<(ptr, ptr)>> to !llvm.ptr<i8> 
-        
-        return %ht_ptr : !llvm.ptr<i8>
-    }
-
     func.func @hash(%key : i32){
         // return modulo 100
         %cidx_100 = arith.constant 100 : i32
@@ -57,15 +80,9 @@ module attributes {gpu.container_module} {
         return %hash_val : i32
     }
 
-
     gpu.module @kernels {
 
-        //gpu.func @build(%table_x_keys: memref<?xi32>, %table_x_vals: memref<?xi32>, %table_x_rows: index, %table_x_cols: index, %ht : !llvm.ptr<i8>)
-
-
-
-
-        func.func @build_hash_table(%table_x : memref<?x?xi32>, %table_x_rows : index) -> memref<?x?xi32> {
+        func.func @build_hash_table(%table_x_keys: memref<?xi32>, %table_x_vals: memref<?xi32>, %table_x_rows: index, %table_x_cols: index, %ht : !llvm.ptr<i8>, %gblock_index : memref<1xi32>) -> memref<?x?xi32> {
             // Constants
             %cidx_0 = arith.constant 0 : index
             %cidx_1 = arith.constant 1 : index
@@ -85,50 +102,50 @@ module attributes {gpu.container_module} {
         }
 
         // Kernel to perform nested join
-        // gpu.func @probe (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
-        //     %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
-        //     //---------------> Size of shared memory is fixed for now. To be changed later 
-        //     workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
-        //     private(%temp_idx: memref<1xindex>)
-        //     kernel 
-        // {
+        gpu.func @hash_join (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
+            %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
+            //---------------> Size of shared memory is fixed for now. To be changed later 
+            workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
+            private(%temp_idx: memref<1xindex>)
+            kernel 
+        {
             
-        //     %bdim = gpu.block_dim x
-        //     %bidx = gpu.block_id x
-        //     %tidx = gpu.thread_id x
+            %bdim = gpu.block_dim x
+            %bidx = gpu.block_id x
+            %tidx = gpu.thread_id x
 
-        //     // Global_thread_index = bdim * bidx + tidx
-        //     %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
-        //     %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
+            // Global_thread_index = bdim * bidx + tidx
+            %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
+            %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
 
-        //     // Check if the thread is valid
-        //     %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %table_x_rows : index
+            // Check if the thread is valid
+            %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %table_x_rows : index
 
-        //     scf.if %is_thread_valid {
-        //         gpu.printf "Thread ID: %lld \n" %tidx : index
+            scf.if %is_thread_valid {
+                gpu.printf "Thread ID: %lld \n" %tidx : index
                 
-        //         // print debugging constants
-        //         %print_thread_id = arith.constant 0: index
-        //         %print_block_id = arith.constant 0: index
+                // print debugging constants
+                %print_thread_id = arith.constant 0: index
+                %print_block_id = arith.constant 0: index
 
-        //         %should_print_thread = arith.cmpi "eq", %tidx, %print_thread_id : index
-        //         %should_print_block = arith.cmpi "eq", %bidx, %print_block_id : index
-        //         %should_print = arith.andi %should_print_thread, %should_print_block : i1
+                %should_print_thread = arith.cmpi "eq", %tidx, %print_thread_id : index
+                %should_print_block = arith.cmpi "eq", %bidx, %print_block_id : index
+                %should_print = arith.andi %should_print_thread, %should_print_block : i1
 
-        //         scf.if %should_print {
-        //             gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
-        //         }
+                scf.if %should_print {
+                    gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
+                }
 
-        //         //constants
-        //         %cidx_0 = arith.constant 0 : index
-        //         %cidx_1 = arith.constant 1 : index
-        //         %cidx_2 = arith.constant 2 : index
+                //constants
+                %cidx_0 = arith.constant 0 : index
+                %cidx_1 = arith.constant 1 : index
+                %cidx_2 = arith.constant 2 : index
 
 
-        //     }
+            }
             
-        //     gpu.return
-        // }
+            gpu.return
+        }
     }
     
     func.func @main() {
@@ -210,18 +227,21 @@ module attributes {gpu.container_module} {
         //global variable for all blocks
         %gblock_offset = gpu.alloc() : memref<1xi32>
 
+
+
+
+
+        // HAS to be split into two KERNELS... One for building the hash table and the other for probing
+
+
+
+
+
+
         // Whichever table is smaller, we build hash table upon that
         // so the larger table is used for probing
         %table_1_or_2_as_build = arith.cmpi "ult", %table1_rows, %table2_rows : index
 
-        //Number of threads would be the number of rows in the larger table
-        %total_threads = arith.select %table_1_or_2_as_build, %table2_rows, %table1_rows : index
-
-        // To calculate the number of blocks needed, perform ceil division: num_blocks = (total_threads + num_threads_per_block - 1) / num_threads_per_block
-        // TODO: arith.ceildivui gives errors which i cant figure out. so using the above thing instead..
-        %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
-        %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
-        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
 
 
         // defining parameters to be passed to the kernel
@@ -242,15 +262,22 @@ module attributes {gpu.container_module} {
         // %table_x_rows is the num_tuples
         %ht = func.call @Init_hash_table(%table_x_rows, %ht_sizes) : (index, index) -> !llvm.ptr<i8>
 
+        //Number of threads for build would be the number of rows in table_x
+        %total_threads_build = %table_x_rows
 
+        // To calculate the number of blocks needed, perform ceil division: num_blocks = (total_threads + num_threads_per_block - 1) / num_threads_per_block
+        // TODO: arith.ceildivui gives errors which i cant figure out. so using the above thing instead..
+        %for_ceil_div_ = arith.addi %total_threads_build, %num_threads_per_block : index
+        %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
+        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
 
 
         gpu.launch_func @kernels::@build
         blocks in (%num_blocks, %cidx_1, %cidx_1) 
         threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-        args(%table_x_keys: memref<?xi32>, %table_x_vals: memref<?xi32>, %table_x_rows: index, %table_x_cols: index, %ht : !llvm.ptr<i8>)
+        args(%table_x_keys: memref<?xi32>, %table_x_vals: memref<?xi32>, %table_x_rows: index, %table_x_cols: index, %ht : !llvm.ptr<i8>, %gblock_index : memref<1xi32>)
 
-        
+        gpu.launch_func @kernels::@probe
 
         // print the result
         %dst = memref.cast %h_table1_vals : memref<?xi32> to memref<*xi32>
