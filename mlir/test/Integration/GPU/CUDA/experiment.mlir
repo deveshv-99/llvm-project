@@ -92,6 +92,11 @@ module attributes {gpu.container_module} {
         }
         call @debugI32(%res) : (i32) -> ()
 
+
+        // pointer to a memref?
+        %h_t= memref.alloc() : memref<2xi32>
+        %ht1 = llvm.getelementptr %h_t[%c0] : (memref<2xi32>, i32) -> !llvm.ptr<i32>
+
         return
     }
 

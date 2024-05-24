@@ -81,7 +81,7 @@ module attributes {gpu.container_module} {
         // store (hash_val,null) in all the hash table entries 
         scf.for %i = %cidx_0 to %ht_size step %cidx_1 {
             %i_i32 = arith.index_cast %i : index to i32
-            
+
             %entry = llvm.getelementptr %hash_table[%i_i32] : (!llvm.ptr<struct<(i32, ptr)>>, i32) -> (!llvm.ptr<struct<(i32, ptr)>>)
             %entry_key = llvm.getelementptr %entry[%c0] : (!llvm.ptr<struct<(i32, ptr)>>, i32) -> (!llvm.ptr<i32>)
             llvm.store %i_i32, %entry_key : !llvm.ptr<i32>
@@ -220,7 +220,7 @@ module attributes {gpu.container_module} {
             %bidx = gpu.block_id x
             %tidx = gpu.thread_id x
 
-            // Global_thread_index = bdim * bidx + tidx+
+            // Global_thread_index = bdim * bidx + tidx
             %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
             %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
 
@@ -397,7 +397,9 @@ module attributes {gpu.container_module} {
         %free_index = gpu.alloc() : memref<1xi32>
 
         //store 1 in the global block offset
-        memref.store %ci32_1, %free_index[%cidx_0] : memref<1xi32>
+        %h_free_index= memref.alloc() : memref<1xi32>
+        memref.store %ci32_1, %h_free_index[%cidx_0] : memref<1xi32>
+        gpu.memcpy %free_index, %h_free_index : memref<1xi32>, memref<1xi32>
 
 
         gpu.launch_func @kernels::@build

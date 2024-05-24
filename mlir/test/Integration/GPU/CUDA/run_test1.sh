@@ -1,6 +1,5 @@
 #!/bin/bash
-# Original Location at:
-# /Data/devesh/llvm-project/mlir/test/Integration/GPU/CUDA/run_test.sh
+
 MLIR_OPT=~/llvm-project/build/bin/mlir-opt
 MLIR_CPU_RUNNER=~/llvm-project/build/bin/mlir-cpu-runner
 SO_DEP1=~/llvm-project/build/lib/libmlir_cuda_runtime.so
