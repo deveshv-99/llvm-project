@@ -140,8 +140,10 @@ module attributes {gpu.container_module} {
             %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>, %g_thread_idx : index) {
 
             // constants
+            %cidx_neg1 = arith.constant -1 : index
             %cidx_0 = arith.constant 0 : index 
             %ci32_1 = arith.constant 1 : i32
+            
 
             // The free index at which the node is being modified
             %index = memref.atomic_rmw addi %ci32_1, %free_index[%cidx_0] : (i32, memref<1xi32>) -> i32
@@ -150,29 +152,24 @@ module attributes {gpu.container_module} {
             memref.store %key, %ll_key[%index] : memref<?xi32>
             memref.store %g_thread_idx, %ll_rowID[%index] : memref<?xindex>
 
+            // compute the hash value
             %hash_val = func.call @hash(%key) : (i32) -> i32
 
+            %cmp_val = memref.load %ht_ptr[%hash_val] : memref<?xindex>
             
-            // Storing the hash value in the hash table.. need to shift it to when initializing the hash table
-            llvm.store %key, %entry_key : !llvm.ptr<i32>
+            // if the value is -1, then update it to %index
+            %cmp = arith.cmpi "eq", %cmp_val, %cidx_neg1 : i1
 
-            // find cmp_ptr
-            %cmp_ptr = llvm.getelementptr %entry[%c1] : (!llvm.ptr<struct<(i32, ptr)>>, i32) -> (!llvm.ptr<ptr>)
-            %cmp = llvm.load %cmp_ptr : !llvm.ptr<ptr>
+            scf.if %cmp {
+                memref.store %index, %ht_ptr[%hash_val] : memref<?xindex>
+                memref.store %cidx_neg1, %ll_next[%index] : memref<?xindex>
+    
+            }
+            else{
+                // implement memref.rmw to update the hash table
 
-        //     // // 1. without atomics
-        //     // //first, add the value of cmp to the next of the new node, then change the value of cmp to the new node
-        //     // %next = llvm.getelementptr %node[%c2] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) -> (!llvm.ptr<ptr>)
-        //     // llvm.store %cmp, %next : !llvm.ptr<ptr>
-        //     // %casted_node = llvm.bitcast %node: !llvm.ptr<struct<(i32, i32, ptr)>> to !llvm.ptr
-        //     // llvm.store %casted_node, %cmp_ptr : !llvm.ptr<ptr>
+            }
 
-
-
-        //     //2. with atomics
-
-            // cast
-            %casted_node = llvm.bitcast %node: !llvm.ptr<struct<(i32, i32, ptr)>> to !llvm.ptr
 
             %res = scf.while (%arg1 = %cmp) :(!llvm.ptr) -> !llvm.ptr {
                 // "Before" region.
