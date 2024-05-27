@@ -1,13 +1,16 @@
 
-all: clean shared run
+all: clean shared test
 
 shared:
-	@ clang++ -c ./shared_stuff/shared.cpp -g -o ./shared_stuff/shared.o
+	@ clang++ -c ./shared_stuff/shared.cpp -g -fPIC -o ./shared_stuff/shared.o
 	@ clang++ -shared ./shared_stuff/shared.o -o ./shared_stuff/shared.so
 
-test:
-	./run_test.sh test-shared.mlir
 
+test:
+	./run_test_ll.sh test-shared.mlir > test-shared.ll
+
+testf:
+	./run_test.sh test-shared.mlir
 run:
 	./run_test.sh join_v1.mlir
 
