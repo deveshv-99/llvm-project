@@ -16,8 +16,6 @@ int memref(int* basePtr,int* alignedPtr, long offset, long sizes[], long strides
 
 int main(){
 
-    
-
     return 0;
 }
 

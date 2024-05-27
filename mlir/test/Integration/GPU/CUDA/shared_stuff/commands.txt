@@ -1,10 +1,10 @@
 # To generate shared object file
 
     # First compile the c++ file to .o file
-    clang++ -c abc.cpp
+    clang++ -c shared.cpp
 
     # Link the object file into a shared object using the -shared flag
-    clang++ -shared abc.o -o abc.so
+    clang++ -shared shared.o -g -o shared.so
 
 
 # To get the .s file (human readable assembly code)

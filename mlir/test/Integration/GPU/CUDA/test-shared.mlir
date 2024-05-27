@@ -27,19 +27,23 @@ module attributes {gpu.container_module} {
 
     func.func @main() {
 
-        %c0 = arith.constant 0 : i32
+        %c0 = arith.constant 4 : i32
         %cidx_0 = arith.constant 0 : index
-        %c = memref.alloc() : memref<1xi32>
-        memref.store %c0, %c[%cidx_0] : memref<1xi32>
+        %c = memref.alloc() : memref<3xi32>
+        memref.store %c0, %c[%cidx_0] : memref<3xi32>
 
-        %d = memref.cast %c : memref<1xi32> to memref<*xi32>
-        %x = call @check(%d) : (memref<*xi32>) -> i32
-        //print x
-        func.call @debugI32(%x) : (i32) -> ()
+        %d = memref.cast %c : memref<3xi32> to memref<?xi32>
+        %x = call @check(%d) : (memref<?xi32>) -> i32
+        // print x
+        // func.call @debugI32(%x) : (i32) -> ()
+
+        %dst = memref.cast %d : memref<?xi32> to memref<*xi32>
+        call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
         return
     }
 
     func.func private @printMemrefI32(memref<*xi32>)
     func.func private @printMemrefI64(memref<*xi64>)
-    func.func private @check(memref<*xi32>) -> i32
+    func.func private @check(memref<?xi32>) -> i32
+    func.func private @init_relation(memref<?xi32>)
 }
