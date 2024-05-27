@@ -137,37 +137,21 @@ module attributes {gpu.container_module} {
 
 
         func.func @Insert_Node_HT(%key : index, %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>,
-            %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>) {
+            %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>, %g_thread_idx : index) {
 
+            // constants
             %cidx_0 = arith.constant 0 : index 
-
             %ci32_1 = arith.constant 1 : i32
 
-            // The free index to which the node is being inserted to
+            // The free index at which the node is being modified
             %index = memref.atomic_rmw addi %ci32_1, %free_index[%cidx_0] : (i32, memref<1xi32>) -> i32
 
-            //Loading linked list and hash table
-            %ht_ptr = llvm.bitcast %ht: !llvm.ptr<i8> to !llvm.ptr<struct<(ptr, ptr)>>
-            %ptr = llvm.getelementptr %ht_ptr[%c0] : (!llvm.ptr<struct<(ptr, ptr)>>, i32) -> (!llvm.ptr<struct<(ptr, ptr)>>)
-            %linked_list = llvm.getelementptr %ptr[%c0] : (!llvm.ptr<struct<(ptr, ptr)>>, i32) -> (!llvm.ptr<ptr>)
-            %ll_ptr = llvm.load %linked_list : !llvm.ptr<ptr>
-            %ll = llvm.bitcast %ll_ptr: !llvm.ptr to !llvm.ptr<struct<(i32, i32, ptr)>>
+            // Insert key and rowID into the new node
+            memref.store %key, %ll_key[%index] : memref<?xi32>
+            memref.store %g_thread_idx, %ll_rowID[%index] : memref<?xindex>
 
-            %hash_table = llvm.getelementptr %ptr[%c1] : (!llvm.ptr<struct<(ptr, ptr)>>, i32) -> (!llvm.ptr<ptr>)  
-            %table_ptr = llvm.load %hash_table : !llvm.ptr<ptr>
-            %table = llvm.bitcast %table_ptr: !llvm.ptr to !llvm.ptr<struct<(i32, ptr)>>
+            %hash_val = func.call @hash(%key) : (i32) -> i32
 
-            // Insert key and value into the new node
-            %node = llvm.getelementptr %ll[%index] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) -> (!llvm.ptr<struct<(i32, i32, ptr)>>)
-            %key_ptr = llvm.getelementptr %node[%c0] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) -> (!llvm.ptr<i32>)
-            llvm.store %key, %key_ptr : !llvm.ptr<i32>
-
-            %val_ptr = llvm.getelementptr %node[%c1] : (!llvm.ptr<struct<(i32, i32, ptr)>>, i32) -> (!llvm.ptr<i32>)
-            llvm.store %val, %val_ptr : !llvm.ptr<i32>
-
-            // Add values in the hash table
-            %entry = llvm.getelementptr %table[%hash_val] : (!llvm.ptr<struct<(i32, ptr)>>, i32) -> (!llvm.ptr<struct<(i32, ptr)>>)
-            %entry_key = llvm.getelementptr %entry[%c0] : (!llvm.ptr<struct<(i32, ptr)>>, i32) -> (!llvm.ptr<i32>)
             
             // Storing the hash value in the hash table.. need to shift it to when initializing the hash table
             llvm.store %key, %entry_key : !llvm.ptr<i32>
@@ -306,9 +290,8 @@ module attributes {gpu.container_module} {
 
                 %key = memref.load %relation1[%g_thread_idx] : memref<?xi32>
                 
-                %hash_val = func.call @hash(%key) : (i32) -> i32
-                func.call @Insert_Node_HT(%key, %ht_val, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %free_index) 
-                 : (index, memref<?xi32>, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<1xi32>) -> ()
+                func.call @Insert_Node_HT(%key, %ht_val, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %free_index, %g_thread_idx) 
+                 : (index, memref<?xi32>, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<1xi32>, index) -> ()
 
 
             }
