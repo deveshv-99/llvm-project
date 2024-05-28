@@ -21,14 +21,7 @@ module attributes {gpu.container_module} {
         
         %for_ceil_div_ = arith.addi %total_threads, %num_threads_per_block : index
         %for_ceil_div = arith.subi %for_ceil_div_, %cidx_1 : index
-        %num_blocks_ = arith.divui %for_ceil_div, %num_threads_per_block : index
-        %num_blocks = scf.if %num_blocks_ {
-            scf.yield %num_blocks_ : index
-        }
-        scf.else {
-            scf.yield %cidx_1 : index
-        }
-
+        %num_blocks = arith.divui %for_ceil_div, %num_threads_per_block : index
         return %num_blocks : index
     }
 
@@ -43,7 +36,7 @@ module attributes {gpu.container_module} {
         }
 
         func.func @alloc_hash_table(%num_tuples : index, %ht_size : index) 
-        -> ( memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>, memref<?xindex>) {
+        -> ( memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>) {
             
             // Allocate linked_list 
             %ll_key = gpu.alloc(%num_tuples) : memref<?xi32>
@@ -51,16 +44,15 @@ module attributes {gpu.container_module} {
             %ll_next = gpu.alloc(%num_tuples) : memref<?xindex>
 
             // Allocate hash table
-            %ht_val = gpu.alloc(%ht_size) : memref<?xi32>
             %ht_ptr = gpu.alloc(%ht_size) : memref<?xindex>
             
             // Return all the allocated memory
-            return %ll_key, %ll_rowID, %ll_next, %ht_val, %ht_ptr
-             : memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>, memref<?xindex>
+            return %ll_key, %ll_rowID, %ll_next, %ht_ptr
+             : memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>
 
         }
 
-        func.func @init_hash_table(%ht_size : index, %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>) {
+        func.func @init_hash_table(%ht_size : index, %ht_ptr : memref<?xindex>) {
             
             // Constants
             %cidx_1 = arith.constant 1 : index
@@ -73,13 +65,13 @@ module attributes {gpu.container_module} {
             gpu.launch_func @kernels::@init_ht
             blocks in (%num_blocks, %cidx_1, %cidx_1)
             threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-            args(%ht_size : index, %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>)
+            args(%ht_size : index, %ht_ptr : memref<?xindex>)
 
             return
         }
 
 
-        func.func @build_table(%relation1 : memref<?xi32>, %relation1_rows : index, %ht_size : index, %ht_val : memref<?xi32>, 
+        func.func @build_table(%relation1 : memref<?xi32>, %relation1_rows : index, %ht_size : index, 
             %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>) {
             
             // Constants
@@ -105,7 +97,7 @@ module attributes {gpu.container_module} {
             blocks in (%num_blocks, %cidx_1, %cidx_1) 
             threads in (%num_threads_per_block, %cidx_1, %cidx_1)
             args( %relation1 : memref<?xi32>, %relation1_rows : index, %ht_size : index,
-                %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, 
+                %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, 
                 %ll_next : memref<?xindex>, %free_index : memref<1xi32>)
 
             return
@@ -114,7 +106,7 @@ module attributes {gpu.container_module} {
 
 
         func.func @count_rows(%relation2 : memref<?xi32>, %relation2_rows : index, %ht_size : index,
-                %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %prefix : memref<?xindex>) -> index {
+                %ht_ptr : memref<?xindex>, %prefix : memref<?xindex>) -> index {
             
             // Constants
             %cidx_0 = arith.constant 0 : index
@@ -125,18 +117,18 @@ module attributes {gpu.container_module} {
 
             %num_blocks = func.call @calc_num_blocks(%ht_size, %num_threads_per_block) : (index, index) -> index
 
-            // --------> Initialize the prefix sum array to 0 in kernel
+            //--------> Initialize the prefix sum array to 0 in kernel
             gpu.launch_func @kernels::@count
             blocks in (%num_blocks, %cidx_1, %cidx_1) 
             threads in (%num_threads_per_block, %cidx_1, %cidx_1)
             args( %relation2 : memref<?xi32>, %relation2_rows : index, %ht_size : index,
-                %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %prefix : memref<?xi32>)
+                %ht_ptr : memref<?xindex>, %prefix : memref<?xi32>)
 
             return
         }
 
 
-        func.func @Insert_Node_HT(%key : index, %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>,
+        func.func @Insert_Node_HT(%key : index, %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>,
             %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>, %g_thread_idx : index) {
 
             // constants
@@ -203,7 +195,7 @@ module attributes {gpu.container_module} {
             return
         }
 
-        gpu.func @init_ht(%ht_size : index, %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>) 
+        gpu.func @init_ht(%ht_size : index, %ht_ptr : memref<?xindex>) 
             kernel
         {
             %bdim = gpu.block_dim x
@@ -238,11 +230,9 @@ module attributes {gpu.container_module} {
                 %cidx_1 = arith.constant 1 : index
 
                 // Since the hash function is a modulo, I assign the index as the value
-                // Set the ht_val to index and ht_ptr to -1
+                // Set the ht_ptr to -1
 
                 %g_thread_i32 = arith.index_cast %g_thread_idx : index to i32
-
-                memref.store %g_thread_i32, %ht_val[%g_thread_idx] : memref<?xi32>
                 memref.store %cidx_neg1, %ht_ptr[%g_thread_idx] : memref<?xindex>
     
             }
@@ -250,7 +240,7 @@ module attributes {gpu.container_module} {
         }
 
         gpu.func @build(%relation1 : memref<?xi32>, %relation1_rows : index, %ht_size : index,
-                %ht_val : memref<?xi32>, %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, 
+                %ht_ptr : memref<?xindex>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, 
                 %ll_next : memref<?xindex>, %free_index : memref<1xi32>)
           kernel
         {
@@ -287,8 +277,8 @@ module attributes {gpu.container_module} {
 
                 %key = memref.load %relation1[%g_thread_idx] : memref<?xi32>
                 
-                func.call @Insert_Node_HT(%key, %ht_val, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %free_index, %g_thread_idx) 
-                 : (index, memref<?xi32>, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<1xi32>, index) -> ()
+                func.call @Insert_Node_HT(%key, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %free_index, %g_thread_idx) 
+                 : (index, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<1xi32>, index) -> ()
 
 
             }
@@ -339,21 +329,21 @@ module attributes {gpu.container_module} {
         %ht_size = arith.constant 1000 : index
 
         // number of rows in the first table is the num_tuples in the linked list
-        %ll_key, %ll_rowID, %ll_next, %ht_val, %ht_ptr = func.call @alloc_hash_table(%relation1_rows, %ht_size) 
-        : (index, index) -> ( memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>, memref<?xindex>)
+        %ll_key, %ll_rowID, %ll_next, %ht_ptr = func.call @alloc_hash_table(%relation1_rows, %ht_size) 
+        : (index, index) -> ( memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>)
 
         
-        func.call @init_hash_table(%ht_size, %ht_val, %ht_ptr) : (index, memref<?xi32>, memref<?xindex>) -> ()
+        func.call @init_hash_table(%ht_size, %ht_ptr) : (index, memref<?xindex>) -> ()
 
 
-        func.call @build_table(%relation1, %relation1_rows, %ht_size, %ht_val, %ht_ptr, %ll_key, %ll_rowID, %ll_next) 
-         : (memref<?xi32>, index, index, memref<?xi32>, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
+        func.call @build_table(%relation1, %relation1_rows, %ht_size, %ht_ptr, %ll_key, %ll_rowID, %ll_next) 
+         : (memref<?xi32>, index, index, memref<?xindex>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
 
         // Allocate memref for prefix sum array
         %prefix = gpu.alloc(%relation2_rows) : memref<?xindex>
 
-        %result_size = func.call @count_rows(%relation2, %relation2_rows, %ht_size, %ht_val, %ht_ptr, %prefix)
-         : (memref<?xi32>, index, index, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> index
+        %result_size = func.call @count_rows(%relation2, %relation2_rows, %ht_size, %ht_ptr, %prefix)
+         : (memref<?xi32>, index, index, memref<?xindex>, memref<?xindex>) -> index
 
 
         // Allocate device memory for the result
