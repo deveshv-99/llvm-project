@@ -88,33 +88,47 @@ module attributes {gpu.container_module} {
         gpu.launch_func @kernels::@build
         blocks in (%num_blocks, %cidx_1, %cidx_1) 
         threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-        args(%relation1 : memref<?xi32>, %relation1_rows : index,%ht_ptr : memref<?xi32>, %ll_key : memref<?xi32>,
+        args(%relation1 : memref<?xi32>, %relation1_rows : index, %ht_ptr : memref<?xi32>, %ll_key : memref<?xi32>,
             %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>)
 
         return
 
     }
 
-    func.func @count_rows(%relation2 : memref<?xi32>, %relation2_rows : index, 
-                %ht_ptr : memref<?xi32>, %prefix : memref<?xi32>) -> (i32) {
-            
+    func.func @count_rows(%relation2 : memref<?xi32>, %relation2_rows : index, %ht_ptr : memref<?xi32>,%ll_key : memref<?xi32>,
+            %ll_rowID  : memref<?xindex>, %ll_next : memref<?xindex>,  %prefix : memref<?xindex>) -> (index) {
+
             // Constants
             %cidx_0 = arith.constant 0 : index
             %cidx_1 = arith.constant 1 : index
-            
+
             %ci32_0 = arith.constant 0 : i32
+            
             // //-------------> Keep threads per block constant at 1024.. Need to change this?
             %num_threads_per_block = arith.constant 1024 : index
 
             %num_blocks = func.call @calc_num_blocks(%relation2_rows, %num_threads_per_block) : (index, index) -> index
 
+            // Global variable for block offset
+            %h_gblock_offset = memref.alloc() : memref<1xi32>
+            memref.store %ci32_0, %h_gblock_offset[%cidx_0] : memref<1xi32>
 
+            %gblock_offset = gpu.alloc() : memref<1xi32>
+            gpu.memcpy %gblock_offset, %h_gblock_offset : memref<1xi32>, memref<1xi32>
+
+            
             gpu.launch_func @kernels::@count 
             blocks in (%num_blocks, %cidx_1, %cidx_1) 
             threads in (%num_threads_per_block, %cidx_1, %cidx_1)
-            args( %relation2 : memref<?xi32>, %relation2_rows : index, %ht_ptr : memref<?xi32>, %prefix : memref<?xi32>)
+            args(%relation2 : memref<?xi32>, %relation2_rows : index, %ht_ptr : memref<?xi32>,
+                %ll_key : memref<?xi32>, %ll_rowID  : memref<?xindex>, %ll_next : memref<?xindex>,
+                %prefix : memref<?xindex>, %gblock_offset : memref<1xi32>)
 
-            return %ci32_0 : i32
+            gpu.memcpy %h_gblock_offset, %gblock_offset : memref<1xi32>, memref<1xi32>
+
+            %block_offset = memref.load %h_gblock_offset[%cidx_0] : memref<1xi32>
+            %block_offset_i32 = arith.index_cast %block_offset : i32 to index
+            return %block_offset_i32 : index
         }
     
     gpu.module @kernels {
@@ -230,7 +244,7 @@ module attributes {gpu.container_module} {
             %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %relation1_rows : index
 
             scf.if %is_thread_valid {
-                gpu.printf "Thread ID: %lld \n" %tidx : index
+                // gpu.printf "Thread ID: %lld \n" %tidx : index
                 
                 // print debugging constants
                 %print_thread_id = arith.constant 0: index
@@ -240,9 +254,9 @@ module attributes {gpu.container_module} {
                 %should_print_block = arith.cmpi "eq", %bidx, %print_block_id : index
                 %should_print = arith.andi %should_print_thread, %should_print_block : i1
 
-                scf.if %should_print {
-                    gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
-                }
+                // scf.if %should_print {
+                //     gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
+                // }
 
                 //constants
                 %cidx_0 = arith.constant 0 : index
@@ -260,8 +274,13 @@ module attributes {gpu.container_module} {
             gpu.return
         }
 
-        gpu.func @count (%relation2 : memref<?xi32>, %relation2_rows : index, %ht_size : index,
-                %ht_ptr : memref<?xi32>, %prefix : memref<?xi32>)
+
+        gpu.func @count (%relation2 : memref<?xi32>, %relation2_rows : index, %ht_ptr : memref<?xi32>,
+            %ll_key : memref<?xi32>, %ll_rowID  : memref<?xindex>, %ll_next : memref<?xindex>,  
+            %prefix : memref<?xindex>, %gblock_offset : memref<1xi32>)
+
+            workgroup(%thread_sums : memref<1024xindex, 3>, %t_block_offset : memref<1xindex, 3>)
+            private(%temp_idx: memref<1xindex>)
             kernel
         {
             %bdim = gpu.block_dim x
@@ -276,7 +295,7 @@ module attributes {gpu.container_module} {
             %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %relation2_rows : index
 
             scf.if %is_thread_valid {
-                gpu.printf "Thread ID: %lld \n" %tidx : index
+                // gpu.printf "Thread ID: %lld \n" %tidx : index
                 
                 // print debugging constants
                 %print_thread_id = arith.constant 0: index
@@ -286,50 +305,78 @@ module attributes {gpu.container_module} {
                 %should_print_block = arith.cmpi "eq", %bidx, %print_block_id : index
                 %should_print = arith.andi %should_print_thread, %should_print_block : i1
 
-                scf.if %should_print {
-                    gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
-                }
+                // scf.if %should_print {
+                //     gpu.printf "Block ID: %ld, Thread ID: %ld, bdim: %ld\n" %bidx, %tidx, %bdim : index, index, index
+                // }
+
 
                 //constants
+                %cidx_neg1 = arith.constant -1 : index 
                 %cidx_0 = arith.constant 0 : index
+                %cidx_1 = arith.constant 1 : index
 
-                %ci32_0 = arith.constant 0 : i32
+                %ci32_neg1 = arith.constant -1 : i32
                 
 
                 // Initialize the prefix sum to 0  
-                memref.store %ci32_0, %prefix[%g_thread_idx] : memref<?xi32>
+                memref.store %cidx_0, %prefix[%g_thread_idx] : memref<?xindex>
 
-                // Step 1: Compute the prefix sum for each thread, which is used for calculating the start index in the result array 
-                // For each thread, compare its key with all keys in the smaller table
-
-                %key1 = memref.load %table_x[%g_thread_idx, %cidx_0] : memref<?x?xi32>
-                
-                //%thread_sums stores the prefix sum for each thread in the block
+                // %thread_sums stores the prefix sum for each thread in the block
                 memref.store %cidx_0, %thread_sums[%tidx] : memref<1024xindex, 3>
 
-                // for each key in the smaller table
-                scf.for %j = %cidx_0 to %table_y_rows step %cidx_1 {
-                    %key2 = memref.load %table_y[%j, %cidx_0] : memref<?x?xi32>
-                    // compare the keys
-                    %cmp = arith.cmpi "eq", %key1, %key2 : i32
-                    // if keys match, increment the prefix sum
-                    scf.if %cmp {
-                        %cur_count = memref.load %thread_sums[%tidx] : memref<1024xindex, 3>
-                        %new_count = arith.addi %cur_count, %cidx_1 : index
-                        memref.store %new_count, %thread_sums[%tidx] : memref<1024xindex, 3>
-                    }
-                }
-                gpu.barrier // we need this so that all the warps are done computing the thread local sums
+                // Step 1: Compute the prefix sum for each thread, which is used for calculating the start index in the result array 
+                // For each thread, compare its key with all keys in the relevant hash bucket chain
 
+                %key = memref.load %relation2[%g_thread_idx] : memref<?xi32>
+
+                %hash_val_ = func.call @hash(%key) : (i32) -> i32
+                %hash_val = arith.index_cast %hash_val_ : i32 to index
+
+                // To get the first node in the linked list
+                %cur_index = memref.load %ht_ptr[%hash_val] : memref<?xi32>
+                
+                // Check if the list is not empty
+                %check = arith.cmpi "ne", %cur_index, %ci32_neg1 : i32 
+
+                scf.if %check{
+                    %cur_idx = arith.index_cast %cur_index : i32 to index
+
+                    // do while loop to iterate over the linked list
+                    %res = scf.while (%arg1 = %cur_idx) :(index) -> index {
+                        // load the current key
+                        %cur_key = memref.load %ll_key[%arg1] : memref<?xi32>
+
+                        // compare the keys
+                        %cmp = arith.cmpi "eq", %key, %cur_key : i32
+
+                        // if keys match, increment the prefix sum
+                        scf.if %cmp {
+                            %cur_count = memref.load %thread_sums[%tidx] : memref<1024xindex, 3>
+                            %new_count = arith.addi %cur_count, %cidx_1 : index
+                            memref.store %new_count, %thread_sums[%tidx] : memref<1024xindex, 3>
+                        }
+                        
+                        // move to the next node in the linked list
+                        %next = memref.load %ll_next[%arg1] : memref<?xindex>
+
+                        %condition = arith.cmpi "ne", %next, %cidx_neg1 : index
+                        // Forward the argument (as result or "after" region argument).
+                        scf.condition(%condition) %next : index
+
+                    } do {
+                        ^bb0(%arg2: index):
+                            scf.yield %arg2 : index
+                    }
+                    
+                }
+                
+                gpu.barrier // we need this so that all the warps are done computing the thread local sums
 
                 //Step 2: Compute the global prefix sum
                 // Single threaded prefix sum
 
                 %is_t0 = arith.cmpi "eq", %tidx, %cidx_0 : index
                 scf.if %is_t0 {
-                    scf.if %should_print {
-                        gpu.printf "Thread start indices: [0, "
-                    }
                     
                     // %temp_idx stores the current value of prefix sum
                     memref.store %cidx_0, %temp_idx[%cidx_0] : memref<1xindex> 
@@ -338,7 +385,7 @@ module attributes {gpu.container_module} {
                     scf.for %i = %cidx_0 to %bdim step %cidx_1 {
                         %g_thread_index = arith.addi %g_thread_offset_in_blocks, %i : index
 
-                        %is_valid = arith.cmpi "ult", %g_thread_index, %table_x_rows : index
+                        %is_valid = arith.cmpi "ult", %g_thread_index, %relation2_rows : index
                         scf.if %is_valid{
 
                             %cur_count = memref.load %thread_sums[%i] : memref<1024xindex, 3>
@@ -348,15 +395,7 @@ module attributes {gpu.container_module} {
                             //thread_sums[i] stores the starting index to write from for thread i, which is 0 for thread 0
                             memref.store %cur_idx, %thread_sums[%i] : memref<1024xindex, 3>
                             memref.store %next_index, %temp_idx[%cidx_0] : memref<1xindex>
-
-                            scf.if %should_print {
-                                gpu.printf "%ld, " %next_index : index
-                            }
                         }
-                    }
-
-                    scf.if %should_print {
-                        gpu.printf "]\n"
                     }
 
                     //Compute global block offset
@@ -366,15 +405,23 @@ module attributes {gpu.container_module} {
                     %cur_block_offset = memref.atomic_rmw addi %total_elements_i32, %gblock_offset[%cidx_0] : (i32, memref<1xi32>) -> i32
                     %cur_block_offset_idx = arith.index_cast %cur_block_offset : i32 to index
 
-                    memref.store %cur_block_offset_idx, %b_block_offset[%cidx_0] : memref<1xindex, 3>
+                    memref.store %cur_block_offset_idx, %t_block_offset[%cidx_0] : memref<1xindex, 3>
 
-                    scf.if %should_print {
-                        gpu.printf "Current block# %ld offset: %ld, total elements: %ld\n" %bidx, %cur_block_offset_idx, %total_elements : index, index, index
-                    }
                 }
+                gpu.barrier
 
-            
+                // step 3: calculate global prefix sum for all threads
+                %global_offset = memref.load %t_block_offset[%cidx_0] : memref<1xindex, 3>
+                %global_offset_i32 = arith.index_cast %global_offset : index to i32
 
+                // add thread local prefix sum to global offset
+                %local_offset = memref.load %thread_sums[%tidx] : memref<1024xindex, 3>
+                %global_prefix = arith.addi %local_offset, %global_offset : index
+
+                // store the global prefix sum
+                memref.store %global_prefix, %prefix[%g_thread_idx] : memref<?xindex>
+
+            }
 
             gpu.return
         }
@@ -383,7 +430,7 @@ module attributes {gpu.container_module} {
         // gpu.func @probe (%table_x : memref<?x?xi32>, %table_y : memref<?x?xi32>, %d_result : memref<?x?xi32>, %table_x_rows : index, 
         //     %table_x_cols : index, %table_y_rows : index, %table_y_cols : index, %gblock_offset : memref<1xi32>) 
         //     //---------------> Size of shared memory is fixed for now. To be changed later 
-        //     workgroup(%thread_sums : memref<1024xindex, 3>, %b_block_offset : memref<1xindex, 3>) 
+        //     workgroup(%thread_sums : memref<1024xindex, 3>, %t_block_offset : memref<1xindex, 3>) 
         //     private(%temp_idx: memref<1xindex>)
         //     kernel 
         // {
@@ -401,10 +448,10 @@ module attributes {gpu.container_module} {
 
         // Allocate and initialize the memrefs for keys of both relations
         %relation1 = memref.alloc(%relation1_rows) : memref<?xi32>
-        call @init_relation(%relation1) : (memref<?xi32>) -> ()
+        call @init_relation_index(%relation1) : (memref<?xi32>) -> ()
 
         %relation2 = memref.alloc(%relation2_rows) : memref<?xi32>
-        call @init_relation(%relation2) : (memref<?xi32>) -> ()
+        call @init_relation_index(%relation2) : (memref<?xi32>) -> ()
 
 
         // Allocate device memory for the relations
@@ -426,38 +473,50 @@ module attributes {gpu.container_module} {
         : (index, index) -> (memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>)
 
         
-        func.call @init_hash_table(%ht_size, %ht_ptr) : (index, memref<?xi32>) -> ()
+        // func.call @init_hash_table(%ht_size, %ht_ptr) : (index, memref<?xi32>) -> ()
 
 
-        func.call @build_table(%relation1, %relation1_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next) 
-         : (memref<?xi32>, index, memref<?xi32>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
+        // func.call @build_table(%relation1, %relation1_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next) 
+        //  : (memref<?xi32>, index, memref<?xi32>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
 
-        // Allocate memref for prefix sum array
-        %prefix = gpu.alloc(%relation2_rows) : memref<?xi32>
+        // // Allocate memref for prefix sum array
+        // %prefix = gpu.alloc(%relation2_rows) : memref<?xindex>
 
-        %result_size = func.call @count_rows(%relation2, %relation2_rows, %ht_ptr, %prefix)
-         : (memref<?xi32>, index,  memref<?xi32>, memref<?xi32>) -> i32
+        // // Get the result array size from count phase
+        // %result_size = func.call @count_rows(%relation2, %relation2_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %prefix)
+        //  : (memref<?xi32>, index,  memref<?xi32>,  memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>) -> index
+
+        // %result_size_i32 = arith.index_cast %result_size : index to i32
+
+        // func.call @debugI32(%result_size_i32) : (i32) -> ()
 
 
-        // Allocate device memory for the result
-        %result_size_idx = arith.index_cast %result_size : i32 to index
-        %d_result_r = gpu.alloc(%result_size_idx) : memref<?xi32>
-        %d_result_s = gpu.alloc(%result_size_idx) : memref<?xi32>
+
+
+
+
+
+
+
+
+        // // Allocate device memory for the result
+        // %d_result_r = gpu.alloc(%result_size) : memref<?xi32>
+        // %d_result_s = gpu.alloc(%result_size) : memref<?xi32>
        
 
-        //func.call @probe_relation(%relation2, %relation2_rows, %)
+        // //func.call @probe_relation(%relation2, %relation2_rows, %)
 
 
-        // Check the result of join
-        %success = call @check(%relation1, %relation2, %relation1,%relation2)
-        : (memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
+        // // Check the result of join
+        // %success = call @check(%relation1, %relation2, %relation1,%relation2)
+        // : (memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
 
-        // print success
-        func.call @debugI32(%success) : (i32) -> ()
+        // // print success
+        // func.call @debugI32(%success) : (i32) -> ()
 
-        // print the result
-        %dst = memref.cast %relation1 : memref<?xi32> to memref<*xi32>
-        call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
+        // // print the result
+        // %dst = memref.cast %relation1 : memref<?xi32> to memref<*xi32>
+        // call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
 
         return
     }
