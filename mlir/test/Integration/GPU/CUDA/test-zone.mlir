@@ -1,66 +1,97 @@
-// Original Location at:
-// /Data/devesh/llvm-project/mlir/test/Integration/GPU/CUDA/nested-loop.mlir
-
 module attributes {gpu.container_module} {
 
-    func.func @debugI32(%val: i32) {
-        %A = memref.alloc() : memref<i32>
-        memref.store %val, %A[]: memref<i32>
-        %U = memref.cast %A :  memref<i32> to memref<*xi32>
+    gpu.module @kernels {
 
-        func.call @printMemrefI32(%U): (memref<*xi32>) -> ()
+        gpu.func @init_ht(%ht_size : index, %ht_ptr : memref<?xi32>) 
+            kernel
+        {
+            %bdim = gpu.block_dim x
+            %bidx = gpu.block_id x
+            %tidx = gpu.thread_id x
 
-        memref.dealloc %A : memref<i32>
-        return
-    }
+            // Global_thread_index = bdim * bidx + tidx
+            %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
+            %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
+
+            // Check if the thread is valid
+            %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %ht_size : index
+
+            scf.if %is_thread_valid {
+
+                // Set the ht_ptr to -1
+                %ci32_neg1 = arith.constant -1 : i32
+                memref.store %ci32_neg1, %ht_ptr[%g_thread_idx] : memref<?xi32>
     
-    func.func @debugI64(%val: i64) {
-        %A = memref.alloc() : memref<i64>
-        memref.store %val, %A[]: memref<i64>
-        %U = memref.cast %A :  memref<i64> to memref<*xi64>
+            }
+            gpu.return 
+        }
 
-        func.call @printMemrefI64(%U): (memref<*xi64>) -> ()
+        gpu.func @build(%relation1 : memref<?xi32>, %relation1_rows : index,
+                %ht_ptr : memref<?xi32>, %ll_key : memref<?xi32>, %ll_rowID : memref<?xindex>, 
+                %ll_next : memref<?xindex>, %free_index : memref<1xi32>)
+            kernel
+        {
+            %bdim = gpu.block_dim x
+            %bidx = gpu.block_id x
+            %tidx = gpu.thread_id x
 
-        memref.dealloc %A : memref<i64>
-        return
+            // Global_thread_index = bdim * bidx + tidx
+            %g_thread_offset_in_blocks = arith.muli %bdim, %bidx : index
+            %g_thread_idx = arith.addi %g_thread_offset_in_blocks, %tidx : index
+
+            // Check if the thread is valid
+            %is_thread_valid = arith.cmpi "ult", %g_thread_idx, %relation1_rows : index
+
+            scf.if %is_thread_valid {
+                
+                //constants
+                %cidx_0 = arith.constant 0 : index
+                %cidx_1 = arith.constant 1 : index
+                %cidx_2 = arith.constant 2 : index
+
+                %key = memref.load %relation1[%g_thread_idx] : memref<?xi32>
+                
+                // func.call @Insert_Node_HT(%key, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %free_index, %g_thread_idx) 
+                //  : (i32, memref<?xi32>, memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<1xi32>, index) -> ()
+
+
+            }
+            
+            gpu.return
+        }
     }
 
-    func.func @main() {
+    func.func @main(){
 
-        %c0 = arith.constant 4 : i32
-        %c1 = arith.constant 1 : i32
-        %cidx_0 = arith.constant 0 : index
         %cidx_1 = arith.constant 1 : index
-        %cidx_2 = arith.constant 2 : index
+        %num_blocks = arith.constant 1 : index
+        %num_threads_per_block = arith.constant 1 : index
 
-        // Table and table sizes have to be passed as arguments later on
-        %relation1_rows = arith.constant 5 : index
-        %relation2_rows = arith.constant 5 : index
+        %ht_size = arith.constant 10 : index
+        %ht_ptr = gpu.alloc(%cidx_1) : memref<?xi32>
 
-        %relation1 = memref.alloc(%relation1_rows) : memref<?xindex>
-        memref.store %cidx_2, %relation1[%cidx_0] : memref<?xindex>
 
-        %x_ = arith.constant 0 : i32
-        %y_ = arith.constant 10 : i32
+        gpu.launch_func @kernels::@init_ht
+        blocks in (%num_blocks, %cidx_1, %cidx_1)
+        threads in (%num_threads_per_block, %cidx_1, %cidx_1)
+        args(%ht_size : index, %ht_ptr : memref<?xi32>)
 
-        // %x_ = memref.atomic_rmw "assign" %cidx_2, %relation1[%cidx_0] : (index, memref<?xindex>) -> index
-        // %y_ = memref.load %relation1[%cidx_0] : memref<?xindex>
-        // print success
-        // cast to integer
-        %x = arith.index_cast %x_ : i32 to index        
-        %y = arith.index_cast %y_ : i32 to index
 
-        %z_ = memref.load %relation1[%cidx_0] : memref<?xindex>
-        %z = arith.index_cast %z_ : index to i32
-        func.call @debugI32(%z) : (i32) -> ()
-        //func.call @debugI32(%x) : (i32) -> ()
-        //func.call @debugI32(%y) : (i32) -> ()
-        // %dst = memref.cast %d : memref<?xi32> to memref<*xi32>
-        // call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
+        %relation1 = gpu.alloc(%cidx_1) : memref<?xi32>
+        %relation1_rows = arith.constant 10 : index
+
+        %ll_key = gpu.alloc(%cidx_1) : memref<?xi32>
+        %ll_rowID = gpu.alloc(%cidx_1) : memref<?xindex>
+        %ll_next = gpu.alloc(%cidx_1) : memref<?xindex>
+
+        %free_index = gpu.alloc() : memref<1xi32>
+
+
+        gpu.launch_func @kernels::@build
+        blocks in (%num_blocks, %cidx_1, %cidx_1) 
+        threads in (%num_threads_per_block, %cidx_1, %cidx_1)
+        args(%relation1 : memref<?xi32>, %relation1_rows : index, %ht_ptr : memref<?xi32>, %ll_key : memref<?xi32>,
+            %ll_rowID : memref<?xindex>, %ll_next : memref<?xindex>, %free_index : memref<1xi32>)
         return
     }
-
-    func.func private @printMemrefI32(memref<*xi32>)
-    func.func private @printMemrefI64(memref<*xi64>)
-
 }
