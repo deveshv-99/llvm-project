@@ -29,7 +29,7 @@ module attributes {gpu.container_module} {
         // Allocate hash table
         %ht_ptr = gpu.alloc(%ht_size) : memref<?xi32>
         
-        // Return all the allocated memory
+        // Return all of the allocated memory
         return %ll_key, %ll_rowID, %ll_next, %ht_ptr
             : memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>
     }
@@ -72,18 +72,14 @@ module attributes {gpu.container_module} {
         %ci32_0 = arith.constant 0 : i32
 
         //global variable for next free index in linked_list
-        %h_free_index = memref.alloc() : memref<1xi32>
         %free_index = gpu.alloc() : memref<1xi32>
-        
 
         //store 0 initially
-        memref.store %ci32_0, %h_free_index[%cidx_0] : memref<1xi32>
-        gpu.memcpy %free_index, %h_free_index : memref<1xi32>, memref<1xi32>
+        gpu.memset %free_index, %ci32_0 : memref<1xi32>, i32
 
         // //-------------> Keep threads per block constant at 1024.. Need to change this?
         %num_threads_per_block = arith.constant 1024 : index
 
-        // To calculate number of blocks needed, perform ceil division:
         %num_blocks = func.call @calc_num_blocks(%relation1_rows, %num_threads_per_block) : (index, index) -> index
 
         gpu.launch_func @kernel_build::@build
@@ -236,13 +232,12 @@ module attributes {gpu.container_module} {
 
             %cmp_val = memref.load %ht_ptr[%hash_val] : memref<?xi32>
             
-            // if the value is -1, then update it to %index
+            // if the ht_ptr value is -1 (i.e the linked chain contains no nodes), then update it to the node's index
             %cmp = arith.cmpi "eq", %cmp_val, %ci32_neg1 : i32
 
-            
             scf.if %cmp {
-
-                memref.store %index_i32, %ht_ptr[%hash_val] : memref<?xi32>
+                // implement memref.rmw to update the hash table
+                %index_old_i32 = memref.atomic_rmw assign %index_i32, %ht_ptr[%hash_val] : (i32, memref<?xi32>) -> i32
                 memref.store %cidx_neg1, %ll_next[%index] : memref<?xindex>
     
             }
@@ -275,7 +270,6 @@ module attributes {gpu.container_module} {
 
             scf.if %is_thread_valid {
                 // gpu.printf "Thread ID: %lld \n" %tidx : index
-                
                 // print debugging constants
                 %print_thread_id = arith.constant 0 : index
                 %print_block_id = arith.constant 0: index
@@ -283,13 +277,6 @@ module attributes {gpu.container_module} {
                 %should_print_thread = arith.cmpi "eq", %tidx, %print_thread_id : index
                 %should_print_block = arith.cmpi "eq", %bidx, %print_block_id : index
                 %should_print = arith.andi %should_print_thread, %should_print_block : i1
-
-                
-
-                //constants
-                %cidx_0 = arith.constant 0 : index
-                %cidx_1 = arith.constant 1 : index
-                %cidx_2 = arith.constant 2 : index
 
                 %key = memref.load %relation1[%g_thread_idx] : memref<?xi32>
                 
@@ -587,19 +574,27 @@ module attributes {gpu.container_module} {
 
     func.func @main() {
 
+        // Constants
+        %cidx_0 = arith.constant 0 : index
+
         // Table and table sizes have to be passed as arguments later on
-        %relation1_rows = arith.constant 5 : index
-        %relation2_rows = arith.constant 5 : index
+        %relation1_rows = arith.constant 50 : index
+        %relation2_rows = arith.constant 50 : index
 
-
-        // Allocate and initialize the memrefs for keys of both relations
+        // Allocate and initialize the memrefs of keys for both relations
         %relation1 = memref.alloc(%relation1_rows) : memref<?xi32>
         call @init_relation_index(%relation1) : (memref<?xi32>) -> ()
 
         %relation2 = memref.alloc(%relation2_rows) : memref<?xi32>
         call @init_relation_index(%relation2) : (memref<?xi32>) -> ()
-        
 
+        // Print relations
+        // %relation1_ = memref.cast %relation1 : memref<?xi32> to memref<*xi32>
+        // func.call @printMemrefI32(%relation1_): (memref<*xi32>) -> ()
+        // %relation2_ = memref.cast %relation2 : memref<?xi32> to memref<*xi32>
+        // func.call @printMemrefI32(%relation2_): (memref<*xi32>) -> ()
+
+        
         // Allocate device memory for the relations
         %d_relation1 = gpu.alloc(%relation1_rows) : memref<?xi32>
         gpu.memcpy %d_relation1, %relation1 : memref<?xi32>, memref<?xi32>
@@ -609,80 +604,94 @@ module attributes {gpu.container_module} {
 
         // //-------------> Keep items per thread constant at 1.. Not sure about this
         // %items_per_thread = arith.constant 1 : index
-
     
         // //-------------> Initialize hash table size as 1000 for now
-        %ht_size = arith.constant 100 : index
+        %ht_size = arith.constant 1000 : index
 
-        // number of rows in the first table(build) is the num_tuples in the linked list
+        // Number of rows in the first table(build) is the num_tuples in the linked list
+        // Allocate device memory for the hash table
         %ll_key, %ll_rowID, %ll_next, %ht_ptr = func.call @alloc_hash_table(%relation1_rows, %ht_size) 
-         : (index, index) -> (memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>)
+        : (index, index) -> (memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xi32>)
 
-        
         func.call @init_hash_table(%ht_size, %ht_ptr) : (index, memref<?xi32>) -> ()
 
-
         func.call @build_table(%d_relation1, %relation1_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next) 
-         : (memref<?xi32>, index, memref<?xi32>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
+        : (memref<?xi32>, index, memref<?xi32>, memref<?xi32>, memref<?xindex>, memref<?xindex>) -> ()
 
+        // Print hash-table
 
-       
-        %ht_ptr_ = memref.alloc(%ht_size) : memref<?xi32>
-        gpu.memcpy %ht_ptr_, %ht_ptr : memref<?xi32>, memref<?xi32>
-
-        %d = memref.cast %ht_ptr_ : memref<?xi32> to memref<*xi32>
+        // %ht_ptr_ = memref.alloc(%ht_size) : memref<?xi32>
+        // gpu.memcpy %ht_ptr_, %ht_ptr : memref<?xi32>, memref<?xi32>
+        // %d = memref.cast %ht_ptr_ : memref<?xi32> to memref<*xi32>
         // call @printMemrefI32(%d) : (memref<*xi32>) -> ()
 
+        // %h_ll_rowID = memref.alloc(%ll_rowID) : memref<?xindex>
+        // gpu.memcpy %h_ll_rowID, %prefix : memref<?xindex>, memref<?xindex>
+        // %dst = memref.cast %h_ll_rowID : memref<?xindex> to memref<*xindex>
+        // call @printMemrefInd(%dst) : (memref<*xindex>) -> ()
 
 
         // Allocate memref for prefix sum array
         %prefix = gpu.alloc(%relation2_rows) : memref<?xindex>
 
-        // Get the result array size from count phase
+        // Get the result_size from count phase
         %result_size = func.call @count_rows(%d_relation2, %relation2_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %prefix)
-         : (memref<?xi32>, index,  memref<?xi32>,  memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>) -> index
+        : (memref<?xi32>, index,  memref<?xi32>,  memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>) -> index
 
-
+        
+        // print result size
         // %result_size_i32 = arith.index_cast %result_size : index to i32
         // func.call @debugI32(%result_size_i32) : (i32) -> ()
 
+         // check if result_size is not 0
+        %check_res_size = arith.cmpi "ne", %result_size, %cidx_0 : index
+        scf.if %check_res_size {
+
+            // Allocate device memory for the result
+            %d_result_r = gpu.alloc(%result_size) : memref<?xi32>
+            %d_result_s = gpu.alloc(%result_size) : memref<?xi32>
+        
+            func.call @probe_relation(%d_relation2, %relation2_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %prefix, %d_result_r, %d_result_s)
+            : (memref<?xi32>, index,  memref<?xi32>,  memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>, memref<?xi32>, memref<?xi32>) -> ()
+
+            // transfer the result back to host
+            %h_result_r = memref.alloc(%result_size) : memref<?xi32>
+            %h_result_s = memref.alloc(%result_size) : memref<?xi32>
+
+            gpu.memcpy %h_result_r, %d_result_r : memref<?xi32>, memref<?xi32>
+            gpu.memcpy %h_result_s, %d_result_s : memref<?xi32>, memref<?xi32>
+            
+            // Print the result
+
+            // %dstr = memref.cast %h_result_r : memref<?xi32> to memref<*xi32>
+            // call @printMemrefI32(%dstr) : (memref<*xi32>) -> ()
+
+            // %dsts = memref.cast %h_result_s : memref<?xi32> to memref<*xi32>
+            // call @printMemrefI32(%dsts) : (memref<*xi32>) -> ()
 
 
-        // %h_ll_key = memref.alloc(%relation2_rows) : memref<?xindex>
-        // gpu.memcpy %h_ll_key, %prefix : memref<?xindex>, memref<?xindex>
-        // %dst = memref.cast %h_ll_key : memref<?xindex> to memref<*xindex>
-        // call @printMemrefInd(%dst) : (memref<*xindex>) -> ()
+            // // Check the result of join
+            %success = func.call @check(%relation1, %relation2, %h_result_r,%h_result_s)
+            : (memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
 
+            // print success
+            func.call @debugI32(%success) : (i32) -> ()
+        
+        }
+        else{
+            %h_result_r = memref.alloc(%result_size) : memref<?xi32>
+            %h_result_s = memref.alloc(%result_size) : memref<?xi32>
 
+            %success = func.call @check(%relation1, %relation2, %h_result_r,%h_result_s)
+            : (memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
 
-
-
-
-
-        // Allocate device memory for the result
-        %d_result_r = gpu.alloc(%result_size) : memref<?xi32>
-        %d_result_s = gpu.alloc(%result_size) : memref<?xi32>
-       
-
-        func.call @probe_relation(%relation2, %relation2_rows, %ht_ptr, %ll_key, %ll_rowID, %ll_next, %prefix, %d_result_r, %d_result_s)
-         : (memref<?xi32>, index,  memref<?xi32>,  memref<?xi32>, memref<?xindex>, memref<?xindex>, memref<?xindex>, memref<?xi32>, memref<?xi32>) -> ()
-
-
-        // // Check the result of join
-        // %success = call @check(%relation1, %relation2, %relation1,%relation2)
-        // : (memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
-
-        // // print success
-        // func.call @debugI32(%success) : (i32) -> ()
-
-        // // print the result
-        // %dst = memref.cast %relation1 : memref<?xi32> to memref<*xi32>
-        // call @printMemrefI32(%dst) : (memref<*xi32>) -> ()
-
-        %relation1_ = memref.cast %relation1 : memref<?xi32> to memref<*xi32>
-        func.call @printMemrefI32(%relation1_): (memref<*xi32>) -> ()
+            // print success
+            func.call @debugI32(%success) : (i32) -> ()
+        }
+        
         return
     }
+
     func.func private @init_relation(memref<?xi32>)
     func.func private @init_relation_index(memref<?xi32>)
     func.func private @check(memref<?xi32>, memref<?xi32>, memref<?xi32>, memref<?xi32>) -> i32
